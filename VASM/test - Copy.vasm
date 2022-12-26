@@ -1,0 +1,23 @@
+﻿// This is a comment!
+.static
+$str1: "Hello, world!"
+
+_start:
+  mov $reg1 0x07 // End of line comments are also valid!
+  mov $reg2 0x05
+  push $reg1
+  push $reg2
+  call Function
+  goto end
+
+Function:
+  pop $reg1
+  pop $reg2
+  mov $reg3 0x02
+  add $reg1 $reg1 $reg2
+  mul $reg1 $reg1 $reg3
+  ret
+
+end:
+  mov $reg8 0xFFFF
+  halt

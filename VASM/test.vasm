@@ -1,0 +1,10 @@
+﻿// Comment, ignore this
+// Using implicit _start section
+_start:
+	MOV $reg1 0xBEEF
+	MOV $reg2 0xCAFE
+	JUMP blah
+	MOV $reg1 0xABCD
+blah:
+	MOV $reg3 0x1234
+	halt
