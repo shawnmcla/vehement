@@ -1,5 +1,5 @@
 ﻿#define VERBOSE
-namespace Vehement
+namespace Vehement.Common
 {
     public enum Reg : byte
     {

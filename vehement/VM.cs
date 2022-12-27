@@ -1,6 +1,4 @@
 ﻿#define VERBOSE
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using Vehement.Common;
 
 namespace Vehement
@@ -78,85 +76,47 @@ namespace Vehement
         public Span<byte> Heap => _mem.AsSpan(HeapOffsetBytes, HeapSizeBytes);
         public Span<byte> Stack => _mem.AsSpan(StackOffsetBytes, StackSizeBytes);
 
-        public void Write16(int addr, ushort value)
+        public void WriteWord(Word addr, Word value)
         {
-            if (ProgramSegmentReadonly && addr >= ProgramOffsetBytes && addr < ProgramOffsetBytes + ProgramSizeBytes)
+            if (ProgramSegmentReadonly && addr.u16 >= ProgramOffsetBytes && addr.u16 < ProgramOffsetBytes + ProgramSizeBytes)
             {
                 _halted = true;
                 Console.WriteLine(">> Illegal execution, halted.");
             }
-
-            var low = (byte)(value & 0xFF);
-            var high = (byte)(value >> 8);
-            _mem[addr] = low;
-            _mem[addr + 1] = high;
+            _mem[addr] = value.Low;
+            _mem[addr + 1] = value.High;
         }
 
-        public ushort Read16(int addr)
+        public void WriteWord(int addr, Word value)
         {
-            var low = _mem[addr];
-            var high = _mem[addr + 1];
-            return (ushort)(high << 8 | low);
+            _mem[addr] = value.Low;
+            _mem[addr + 1] = value.High;
         }
 
-        public void Write8(int addr, byte value)
+
+        public Word ReadWord(int addr)
         {
-            _mem[addr] = value;
+            return new Word(_mem[addr], _mem[addr + 1]);
         }
 
-        public byte Read8(int addr)
+        public void StackWrite(ushort offset, Word value)
         {
-            return _mem[addr];
+            WriteWord(StackOffsetBytes + offset, value);
         }
 
-        public void HeapWrite8(ushort offset, byte value)
+        public Word StackRead(ushort offset)
         {
-            Write8(HeapOffsetBytes + offset, value);
+            return ReadWord(StackOffsetBytes + offset);
         }
 
-        public byte HeapRead8(ushort offset)
+        public Word ReadRegister(byte registerNumber)
         {
-            return Read8(HeapOffsetBytes + offset);
+            return new Word(_regs[registerNumber]);
         }
 
-        public void StackWrite8(ushort offset, byte value)
+        public void WriteRegister(byte registerNumber, Word value)
         {
-            Write8(StackOffsetBytes + offset, value);
-        }
-
-        public byte StackRead8(ushort offset)
-        {
-            return Read8(StackOffsetBytes + offset);
-        }
-
-        public void HeapWrite16(ushort offset, ushort value)
-        {
-            Write16(HeapOffsetBytes + offset, value);
-        }
-
-        public ushort HeapRead16(ushort offset)
-        {
-            return Read16(HeapOffsetBytes + offset);
-        }
-
-        public void StackWrite16(ushort offset, ushort value)
-        {
-            Write16(StackOffsetBytes + offset, value);
-        }
-
-        public ushort StackRead16(ushort offset)
-        {
-            return Read16(StackOffsetBytes + offset);
-        }
-
-        public ushort ReadRegister(byte registerNumber)
-        {
-            return _regs[registerNumber];
-        }
-
-        public void WriteRegister(byte registerNumber, ushort value)
-        {
-            _regs[registerNumber] = value;
+            _regs[registerNumber] = value.u16;
         }
 
         public void Step()
@@ -169,8 +129,8 @@ namespace Vehement
             var instruction = (Op)Program[Pc];
             int comparison;
             byte reg, reg2, reg3;
-            ushort value, value2, addr, low, high;
-            Half fValue, fValue2;
+            ushort addr, low, high;
+            Word value, value2, addrWord;
 
             Console.WriteLine($"PC {Pc} = 0x{instruction:X}");
             switch (instruction)
@@ -181,130 +141,121 @@ namespace Vehement
                 case Op.PUSH:
                     reg = Program[Pc + 1];
                     value = ReadRegister(reg);
-                    StackWrite16(Sp, value);
+                    StackWrite(Sp, value);
                     Sp += 2;
                     Pc += 2;
 #if VERBOSE
                     Console.WriteLine($"PUSH $reg{reg} (push value of register to stack)");
-                    Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
+                    //Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
 #endif
                     break;
                 case Op.POP:
                     reg = Program[Pc + 1];
                     Sp -= 2;
-                    value = StackRead16(Sp);
+                    value = StackRead(Sp);
                     WriteRegister(reg, value);
                     Pc += 2;
 #if VERBOSE
                     Console.WriteLine($"POP $reg{reg} (pop value from stack into register)");
-                    Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
+                    //Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
 #endif
                     break;
                 case Op.DUP:
-                    value = StackRead16((ushort)(Sp - 2));
-                    StackWrite16(Sp, value);
+                    value = StackRead((ushort)(Sp - 2));
+                    StackWrite(Sp, value);
                     Sp += 2;
                     Pc += 1;
-
 #if VERBOSE
                     Console.WriteLine("DUP");
-                    Console.WriteLine($"  Duplicated value from top of stack({value})");
+                    //Console.WriteLine($"  Duplicated value from top of stack({value})");
 #endif
                     break;
                 case Op.ADD:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = (ushort)(ReadRegister(reg2) + ReadRegister(reg3));
+                    value = new Word((ushort)(ReadRegister(reg2).u16 + ReadRegister(reg3).u16));
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"ADD $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` + `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.ADDF:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = ToUshort(ToHalf(ReadRegister(reg2)) + ToHalf(ReadRegister(reg3)));
+                    value = new Word(ReadRegister(reg2).f16 + ReadRegister(reg3).f16);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"ADDF $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` + `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.SUB:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = (ushort)(ReadRegister(reg2) - ReadRegister(reg3));
+                    value = new Word((ushort)(ReadRegister(reg2).u16 - ReadRegister(reg3).u16));
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"SUB $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` - `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.SUBF:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = ToUshort(ToHalf(ReadRegister(reg2)) - ToHalf(ReadRegister(reg3)));
+                    value = new Word(ReadRegister(reg2).f16 - ReadRegister(reg3).f16);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"SUBF $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` - `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.MUL:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = (ushort)(ReadRegister(reg2) * ReadRegister(reg3));
+                    value = new Word((ushort)(ReadRegister(reg2).u16 * ReadRegister(reg3).u16));
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"MUL $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` * `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.MULF:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = ToUshort(ToHalf(ReadRegister(reg2)) * ToHalf(ReadRegister(reg3)));
+                    value = new Word(ReadRegister(reg2).f16 * ReadRegister(reg3).f16);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"MULF $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` * `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.DIV:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = (ushort)(ReadRegister(reg2) / ReadRegister(reg3));
+                    value = new Word((ushort)(ReadRegister(reg2).u16 / ReadRegister(reg3).u16));
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"DIV $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` / `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.DIVF:
                     reg = Program[Pc + 1];
                     reg2 = Program[Pc + 2];
                     reg3 = Program[Pc + 3];
-                    value = ToUshort(ToHalf(ReadRegister(reg2)) / ToHalf(ReadRegister(reg3)));
+                    value = new Word(ReadRegister(reg2).f16 / ReadRegister(reg3).f16);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
                     Console.WriteLine($"DIVF $reg{reg} $reg{reg2} $reg{reg3}");
-                    Console.WriteLine($"  reg{reg3} = `0x{ReadRegister(reg2):X}` / `0x{ReadRegister(reg3)}` (`0x{value:X}`)");
 #endif
                     break;
                 case Op.CMP_MEM_REG:
@@ -314,17 +265,16 @@ namespace Vehement
                     var props = GetComparisonProperties(instruction);
                     value = props.X;
                     value2 = props.Y;
-                    comparison = value.CompareTo(value2);
+                    comparison = value.u16.CompareTo(value2.u16);
                     SetFlag(FlagsValue.CmpEqual, comparison == 0);
                     SetFlag(FlagsValue.CmpGreaterThan, comparison > 0);
                     SetFlag(FlagsValue.CmpLessThan, comparison < 0);
                     Pc += (ushort)(1 + props.Offset);
 #if VERBOSE
-                    Console.WriteLine("CMP (top two bytes of stack)");
                     Console.WriteLine($"Comparison result: {comparison}");
-                    Console.WriteLine($"EQUALITY FLAG: {value} == {value2}? {Flags.HasFlag(FlagsValue.CmpEqual)}");
-                    Console.WriteLine($"GT FLAG: {value} > {value2}? {Flags.HasFlag(FlagsValue.CmpGreaterThan)}");
-                    Console.WriteLine($"LT FLAG: {value} < {value2}? {Flags.HasFlag(FlagsValue.CmpLessThan)}");
+                    //Console.WriteLine($"EQUALITY FLAG: {value} == {value2}? {Flags.HasFlag(FlagsValue.CmpEqual)}");
+                    //Console.WriteLine($"GT FLAG: {value} > {value2}? {Flags.HasFlag(FlagsValue.CmpGreaterThan)}");
+                    //Console.WriteLine($"LT FLAG: {value} < {value2}? {Flags.HasFlag(FlagsValue.CmpLessThan)}");
 #endif
                     break;
                 case Op.MOV_REG_REG:
@@ -334,40 +284,36 @@ namespace Vehement
                     Pc += 3;
 #if VERBOSE
                     Console.WriteLine($"MOV $reg{reg} $reg{reg2}");
-                    Console.WriteLine($"  reg{reg} = `0x{ReadRegister(reg2):X}`");
+                    Console.WriteLine($"  reg{reg} = `0x{ReadRegister(reg2).u16:X}`");
 #endif
                     break;
                 case Op.MOV_REG_MEM:
                     reg = Program[Pc + 1];
                     low = Program[Pc + 2];
                     high = Program[Pc + 3];
-                    addr = (ushort)(high << 8 | low);
-                    value = Read16(addr);
+                    addrWord = new(Program[Pc + 2], Program[Pc + 3]);
+                    value = ReadWord(addrWord);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
-                    Console.WriteLine($"MOV $reg{reg} $0x{addr}");
-                    Console.WriteLine($"  Write value `0x{value:X}` to register $r{reg}");
+                    //Console.WriteLine($"MOV $reg{reg} $0x{addr}");
+                    //Console.WriteLine($"  Write value `0x{value:X}` to register $r{reg}");
 #endif
                     break;
                 case Op.MOV_MEM_REG:
-                    low = Program[Pc + 1];
-                    high = Program[Pc + 2];
+                    addrWord = new Word(Program[Pc + 1], Program[Pc + 2]);
                     reg = Program[Pc + 3];
-                    addr = (ushort)(high << 8 | low);
                     value = ReadRegister(reg);
-                    Write16(addr, value);
+                    WriteWord(addrWord, value);
                     Pc += 4;
 #if VERBOSE
-                    Console.WriteLine($"MOV $0x{addr} $reg{reg}");
-                    Console.WriteLine($"  Write value `0x{value:X}` to memory at address `0x{addr:X}`");
+                    Console.WriteLine($"MOV $0x{addrWord} $reg{reg}");
+                    Console.WriteLine($"  Write value `0x{value:X}` to memory at address `0x{addrWord:X}`");
 #endif
                     break;
                 case Op.MOV_REG_IMM:
                     reg = Program[Pc + 1];
-                    low = Program[Pc + 2];
-                    high = Program[Pc + 3];
-                    value = (ushort)(high << 8 | low);
+                    value = new Word(Program[Pc + 2], Program[Pc + 3]);
                     WriteRegister(reg, value);
                     Pc += 4;
 #if VERBOSE
@@ -521,19 +467,19 @@ namespace Vehement
 
             if (operation == Op.CMP)
             {
-                props.X = StackRead16((ushort)(Sp - 4));
-                props.Y = StackRead16((ushort)(Sp - 2));
+                props.X = StackRead((ushort)(Sp - 4));
+                props.Y = StackRead((ushort)(Sp - 2));
             }
             else if (operation == Op.CMP_MEM_REG)
             {
-                props.X = Read16(Program[Pc + 1] + (Program[Pc + 2] << 8));
+                props.X = ReadWord(Program[Pc + 1] + (Program[Pc + 2] << 8));
                 props.Y = ReadRegister(Program[Pc + 3]);
                 props.Offset = 3;
             }
             else if (operation == Op.CMP_REG_MEM)
             {
                 props.X = ReadRegister(Program[Pc + 1]);
-                props.Y = Read16(Program[Pc + 2] + (Program[Pc + 3] << 8));
+                props.Y = ReadWord(Program[Pc + 2] + (Program[Pc + 3] << 8));
                 props.Offset = 3;
             }
             else if (operation == Op.CMP_REG_REG)
@@ -552,7 +498,7 @@ namespace Vehement
         private static unsafe TDest ReinterpretCast<TSource, TDest>(TSource source)
         {
             var tr = __makeref(source);
-            TDest w = default(TDest)!;
+            TDest w = default!;
             var trw = __makeref(w);
             *((IntPtr*)&trw) = *((IntPtr*)&tr);
             return __refvalue(trw, TDest);
@@ -560,8 +506,8 @@ namespace Vehement
 
         private class ComparisonProperties
         {
-            public ushort X;
-            public ushort Y;
+            public Word X;
+            public Word Y;
             public int Offset;
         }
     }

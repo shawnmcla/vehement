@@ -2,7 +2,7 @@
 {
     public static class OpsMapper
     {
-        public static Dictionary<Op, Mnemonic> keyValuePairs = new Dictionary<Op, Mnemonic>()
+        public static Dictionary<Op, Mnemonic> mapping = new Dictionary<Op, Mnemonic>()
         {
             { Op.NOOP, Mnemonic.NOOP },
 
@@ -57,7 +57,7 @@
 
         public static Mnemonic GetMnemonic(Op op)
         {
-            return keyValuePairs[op];
+            return mapping[op];
         }
     }
 
@@ -104,17 +104,22 @@
 
         DUP,
 
-        ADD,        // [reg8], [reg8], [reg8] (Add regs 2 and 3, store in reg 1)
-        SUB,        // [reg8], [reg8], [reg8] (Sub ..
-        MUL,        // [reg8], [reg8], [reg8] (Mul ..
-        DIV,        // [reg8], [reg8], [reg8] (Div ..
+        ADD,        // [reg8], [reg8], [reg8] (unsigned i16, Add regs 2 and 3, store in reg 1)
+        SUB,        // [reg8], [reg8], [reg8] (unsigned i16, Sub ..
+        MUL,        // [reg8], [reg8], [reg8] (unsigned i16, Mul ..
+        DIV,        // [reg8], [reg8], [reg8] (unsigned i16, Div ..
+
+        ADDS,        // [reg8], [reg8], [reg8] (Signed i16, Add regs 2 and 3, store in reg 1)
+        SUBS,        // [reg8], [reg8], [reg8] (Signed i16, Sub ..
+        MULS,        // [reg8], [reg8], [reg8] (Signed i16, Mul ..
+        DIVS,        // [reg8], [reg8], [reg8] (Signed i16, Div ..
 
         ADDF,        // [reg8], [reg8], [reg8] (float16, Add regs 2 and 3, store in reg 1)
         SUBF,        // [reg8], [reg8], [reg8] (float16, Sub ..
         MULF,        // [reg8], [reg8], [reg8] (float16, Mul ..
         DIVF,        // [reg8], [reg8], [reg8] (float16, Div ..
 
-        CMP,        // (Compare value of word at sp-4 with word at sp-2)
+        CMP,        // (Compare unsigned i16 value of word at sp-4 with word at sp-2)
         CMP_REG_REG,// [reg8], [reg8] (Compare value of first and second register)
         CMP_REG_MEM,// [reg8], [adr16](Compare value of register with value at address)            
         CMP_MEM_REG,// [adr16], [reg8](Compare value at address with value of register)
@@ -123,6 +128,11 @@
         CMPF_REG_REG,// [reg8], [reg8] (Compare float16 value of first and second register)
         CMPF_REG_MEM,// [reg8], [adr16](Compare float16 value of register with value at address)            
         CMPF_MEM_REG,// [adr16], [reg8](Compare float16 value at address with value of register)
+
+        CMPS,        // (Compare signed i16 value of word at sp-4 with word at sp-2)
+        CMPS_REG_REG,// [reg8], [reg8] (Compare float16 value of first and second register)
+        CMPS_REG_MEM,// [reg8], [adr16](Compare float16 value of register with value at address)            
+        CMPS_MEM_REG,// [adr16], [reg8](Compare float16 value at address with value of register)
 
         JUMP,       // [off16] (Unconditional)
         JUMP_ZERO,      // [off16] (Jump to program+off16 IF top of stack is 0)
