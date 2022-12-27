@@ -98,8 +98,8 @@ namespace Vehement.Assembler
             { Op.DIV, new(Op.DIV, ArgType.Reg,ArgType.Reg,ArgType.Reg)},
 
             { Op.JUMP, new(Op.JUMP, ArgType.LabelRef) },
-            { Op.JUMP_Z, new(Op.JUMP_Z, ArgType.LabelRef) },
-            { Op.JUMP_NZ, new(Op.JUMP_NZ, ArgType.LabelRef) },
+            { Op.JUMP_ZERO, new(Op.JUMP_ZERO, ArgType.LabelRef) },
+            { Op.JUMP_NOT_ZERO, new(Op.JUMP_NOT_ZERO, ArgType.LabelRef) },
             { Op.PUSH, new(Op.PUSH, ArgType.Reg) },
             { Op.POP, new(Op.POP, ArgType.Reg) },
             { Op.CALL, new(Op.CALL, ArgType.LabelRef) },
