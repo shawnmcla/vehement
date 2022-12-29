@@ -23,7 +23,7 @@ namespace Vehement.Common
         CmpEqual = 0b_0001,
         CmpLessThan = 0b_0010,
         CmpGreaterThan = 0b_0100,
-        Reserved1 = 0b_0000_1000,
+        Interrupt = 0b_0000_1000,
         Reserved2 = 0b_0001_0000,
         Reserved3 = 0b_0010_0000,
         Reserved4 = 0b_0100_0000,

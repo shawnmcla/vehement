@@ -1,0 +1,25 @@
+﻿// FIBONACCI
+//_start:
+    MOV $reg7 0x01 // Value with which we increment i
+    MOV $reg8 0x04 // Value to add to SP after pops
+    MOV $reg1 0x00 // i
+    MOV $reg2 0x15   // Limit for i
+
+    PUSH 0x00       // First three values
+    PUSH 0x01
+    PUSH 0x01
+
+LoopStart:
+    CMP $reg1 $reg2 // Compare i to Limit for i
+    JUMP_GEQ End    // if i >= limit jump to end
+    POP $reg3       // Put top two stack values in registers to add them
+    POP $reg4       
+    ADD $rsp  $reg8 // sp+4
+    ADD $reg3 $reg4 // Add the two values popped from stack
+    PUSH $reg3       // Push this value to the stack
+    ADD $reg1 $reg7 // i += 1
+    JUMP LoopStart
+    
+End:
+    HALT
+// End FIBONACCI

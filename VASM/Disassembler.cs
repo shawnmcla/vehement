@@ -104,7 +104,6 @@ namespace Vehement.Assembler
             { Op.POP, new(Op.POP, ArgType.Reg) },
             { Op.CALL, new(Op.CALL, ArgType.LabelRef) },
             { Op.RET, new(Op.RET) },
-            { Op.PRINT, new(Op.PRINT, ArgType.Literal16) },
 
             { Op.HALT, new(Op.HALT)},
         };

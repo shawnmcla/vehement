@@ -1,0 +1,22 @@
+﻿MOV $reg6 0xFFFF // Repetitions
+MOV $reg3 0x00
+MOV $reg7 0x01 // Value with which we increment i
+MOV $reg2 0xFFFF // Limit for i
+MOV $reg5 0x05
+MOV $reg8 0x02
+PreLoop:
+MOV $reg1 0x00 // i
+LoopStart:
+ADD $reg1 $reg7
+CMP $reg1 $reg2
+ADD $reg5 $reg8
+JUMP_GEQ End1
+JUMP LoopStart
+
+End1:
+SUB $reg6 $reg7
+CMP $reg6 $reg3
+JUMP_LEQ PreLoop
+End2:
+HALT
+    

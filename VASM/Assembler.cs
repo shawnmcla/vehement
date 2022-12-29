@@ -8,12 +8,38 @@ namespace Vehement.Assembler
 {
     public partial class Assembler
     {
+        private class CompilationSection
+        {
+            private string name = "";
+            private static int next = 0;
+            private List<CompilationResult> results = new();
+            private int index = 0;
+
+            public List<CompilationResult> Results => results;
+            public string Name => name;
+            public int Index => index;
+
+            public CompilationSection(string name, List<CompilationResult> results)
+            {
+                if (name.ToUpper() == "_START")
+                {
+                    index = -1;
+                }
+                else
+                {
+                    index = next++;
+                }
+                this.name = name.ToUpper();
+                this.results = results;
+            }
+        }
+
         private List<string> sourceLines;
         private int lineIndex = 0;
 
         private StaticData? staticData;
-        private SortedDictionary<string, List<string>> sourceSections = new();
-        private SortedDictionary<string, List<CompilationResult>> compiledSections = new();
+        private Dictionary<string, List<string>> sourceSections = new();
+        private Dictionary<string, CompilationSection> compiledSections = new();
 
         public List<byte> EmitCompiledProgram()
         {
@@ -28,22 +54,23 @@ namespace Vehement.Assembler
                 staticSegmentSize = bytes.Count;
                 offset = bytes.Count;
             }
-
+            var orderedSections = compiledSections.Values.OrderBy(s => s.Index);
             // First pass, simply track sections and their offsets.
-            foreach (var (sectionName, compilationResults) in compiledSections)
+            foreach (var section in orderedSections)
             {
-                sectionOffsets.Add(sectionName, offset);
-                foreach (var result in compilationResults)
+                sectionOffsets.Add(section.Name, offset);
+                foreach (var result in section.Results)
                 {
                     offset += result.Bytecode.Length;
                 }
             }
 
             // Second pass, emit bytecode and patch jump targets
-            foreach (var (sectionName, compilationResults) in compiledSections)
+            foreach (var section in orderedSections)
             {
+                Console.WriteLine("EMITTING FOR SECTION: " + section.Name);
                 List<byte> sectionBytes = new();
-                foreach (var result in compilationResults)
+                foreach (var result in section.Results)
                 {
                     byte[] bytecode = result.Bytecode;
                     if (result.LabelToResolve.HasValue)
@@ -76,22 +103,22 @@ namespace Vehement.Assembler
 
         private void CompileSection(string name, List<string> lines)
         {
-            List<CompilationResult> compiledSection = new();
+            List<CompilationResult> compiledSectionResults = new();
 
             foreach (var line in lines)
             {
                 var result = AsmToBytecode(line);
-                compiledSection.Add(result);
+                compiledSectionResults.Add(result);
             }
 
-            compiledSections.Add(name, compiledSection);
+            compiledSections.Add(name, new(name, compiledSectionResults));
         }
 
         private void CompileSections()
         {
             foreach (var (sectionName, sectionSource) in sourceSections)
             {
-                Debug.WriteLine($"Compiling section `{sectionName}`");
+                Console.WriteLine($"Compiling section `{sectionName}`");
                 CompileSection(sectionName, sectionSource);
             }
         }
@@ -195,33 +222,45 @@ namespace Vehement.Assembler
 
             var instruction = asm.ToUpper().Split(' ').Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
             var mnemonic = instruction[0];
+            string dst = "", src = "";
             switch (mnemonic)
             {
                 case "JUMP":
                     Debug.Assert(instruction.Length == 2, "JUMP [label]");
                     return new(new byte[] { (byte)Op.JUMP, 0, 0 }, instruction[1], 1);
+                case "JUMP_GEQ":
+                    Debug.Assert(instruction.Length == 2, "JUMP_GEQ [label]");
+                    return new(new byte[] { (byte)Op.JUMP_GEQ, 0, 0 }, instruction[1], 1);
+                case "JUMP_LEQ":
+                    Debug.Assert(instruction.Length == 2, "JUMP_GEQ [label]");
+                    return new(new byte[] { (byte)Op.JUMP_LEQ, 0, 0 }, instruction[1], 1);
                 case "ADD":
-                    Debug.Assert(instruction.Length == 4, "ADD [reg (dest)] [reg (operand_x)] [reg (operand_y)]");
+                    Debug.Assert(instruction.Length == 3, "ADD [reg (dest)] [reg (operand)]");
                     return new(new byte[] {
                     (byte)Op.ADD,
                     RegisterToByte(instruction[1]),
                     RegisterToByte(instruction[2]),
-                    RegisterToByte(instruction[3])
+                });
+                case "SUB":
+                    Debug.Assert(instruction.Length == 3, "SUB [reg (dest)] [reg (operand)]");
+                    return new(new byte[] {
+                    (byte)Op.SUB,
+                    RegisterToByte(instruction[1]),
+                    RegisterToByte(instruction[2]),
                 });
                 case "MUL":
-                    Debug.Assert(instruction.Length == 4, "MUL [reg (dest)] [reg (operand_x)] [reg (operand_y)]");
+                    Debug.Assert(instruction.Length == 3, "MUL [reg (dest)] [reg (operand)]");
                     return new(new byte[] {
                     (byte)Op.MUL,
                     RegisterToByte(instruction[1]),
                     RegisterToByte(instruction[2]),
-                    RegisterToByte(instruction[3])
                 });
                 case "CALL":
                     Debug.Assert(instruction.Length == 2, "CALL [addr]");
                     if (IsImmediate(instruction[1]))
                     {
-                        var addrBytes = SplitToBytes(ImmediateToUShort(instruction[1]));
-                        return new(new byte[] { (byte)Op.CALL, addrBytes.lo, addrBytes.hi });
+                        var (lo, hi) = SplitToBytes(ImmediateToUShort(instruction[1]));
+                        return new(new byte[] { (byte)Op.CALL, lo, hi });
                     }
                     else if (IsLabelReference(instruction[1]))
                     {
@@ -232,15 +271,26 @@ namespace Vehement.Assembler
                     Debug.Assert(instruction.Length == 1, "RET");
                     return new(new byte[] { (byte)Op.RET });
                 case "PUSH":
-                    Debug.Assert(instruction.Length == 2, "PUSH [reg]");
-                    return new(new byte[] { (byte)Op.PUSH, RegisterToByte(instruction[1]) });
+                    Debug.Assert(instruction.Length == 2, "PUSH [reg | imm16]");
+                    if (IsRegister(instruction[1]))
+                    {
+                        return new(new byte[] { (byte)Op.PUSH, RegisterToByte(instruction[1]) });
+                    }
+                    else
+                    {
+                        var (lo, hi) = SplitToBytes(ImmediateToUShort(instruction[1]));
+                        return new(new byte[] { (byte)Op.PUSH_IMM, lo, hi });
+                    }
                 case "POP":
                     Debug.Assert(instruction.Length == 2, "POP [reg]");
                     return new(new byte[] { (byte)Op.POP, RegisterToByte(instruction[1]) });
+                case "DUP":
+                    Debug.Assert(instruction.Length == 1, "DUP");
+                    return new(new byte[] { (byte)Op.DUP });
                 case "MOV":
                     Debug.Assert(instruction.Length == 3, "MOV [dest] [src]");
-                    string dst = instruction[1];
-                    string src = instruction[2];
+                    dst = instruction[1];
+                    src = instruction[2];
                     if (IsRegister(dst) && IsRegister(src))
                     {
                         // Emit MOV_REG_REG
@@ -258,6 +308,12 @@ namespace Vehement.Assembler
                         var (lo, hi) = SplitToBytes(MemoryAddressToUShort(src));
                         return new(new byte[] { (byte)Op.MOV_REG_MEM, RegisterToByte(dst), lo, hi });
                     }
+                    else if (IsRegister(dst) && IsImmediate(src))
+                    {
+                        // Emit MOV_REG_MEM
+                        var (lo, hi) = SplitToBytes(MemoryAddressToUShort(src));
+                        return new(new byte[] { (byte)Op.MOV_REG_IMM, RegisterToByte(dst), lo, hi });
+                    }
                     else if (IsMemory(dst) && IsRegister(src))
                     {
                         // EMIT MOV_MEM_REG
@@ -268,6 +324,36 @@ namespace Vehement.Assembler
                     {
                         throw new Exception($"Invalid operands for MOV: `{dst}`, `{src}`");
                     }
+                case "CMP":
+                    if (instruction.Length == 1)
+                    {
+                        return new(new byte[] { (byte)Op.CMP });
+                    }
+                    else
+                    {
+                        Debug.Assert(instruction.Length == 3, "CMP [reg|mem operand 1] [reg|mem operand 2]");
+                        dst = instruction[1];
+                        src = instruction[2];
+                        if (IsRegister(dst) && IsRegister(src))
+                        {
+                            return new(new byte[] { (byte)Op.CMP_REG_REG, RegisterToByte(dst), RegisterToByte(src) });
+                        }
+                        else if (IsRegister(dst) && IsMemory(src))
+                        {
+                            var (lo, hi) = SplitToBytes(MemoryAddressToUShort(src));
+                            return new(new byte[] { (byte)Op.CMP_REG_MEM, RegisterToByte(dst), lo, hi });
+                        }
+                        else if (IsMemory(dst) && IsRegister(src))
+                        {
+                            var (lo, hi) = SplitToBytes(MemoryAddressToUShort(dst));
+                            return new(new byte[] { (byte)Op.CMP_REG_MEM, RegisterToByte(src), lo, hi });
+                        }
+                        else
+                        {
+                            Debug.Assert(false, $"Invalid operands for CMP: `{dst}`, `{src}`");
+                        }
+                    }
+                    break;
                 case "HALT":
                     Debug.Assert(instruction.Length == 1, "HALT");
                     return new(new byte[] { (byte)Op.HALT });
@@ -276,30 +362,26 @@ namespace Vehement.Assembler
                     break;
             }
 
-            return new(new byte[] { });
+            return new(""u8.ToArray());
         }
 
         #region UTIL
         public static (byte lo, byte hi) SplitToBytes(ushort value) => (lo: (byte)(value & 0xFF), hi: (byte)(value >> 8));
-        public static byte RegisterToByte(string str) => IsSpecialRegister(str) ? SpecialRegisterToByte(str) : (byte)(Convert.ToByte(str.Substring(4), 16) - 1);
+        public static byte RegisterToByte(string str) => IsSpecialRegister(str) ? SpecialRegisterToByte(str) : (byte)(Convert.ToByte(str[4..], 16) - 1);
 
         public static byte SpecialRegisterToByte(string str)
         {
-            switch (str)
+            return str switch
             {
-                case "$RBP":
-                    return (byte)Reg.Sb;
-                case "$RSP":
-                    return (byte)Reg.Sp;
-                case "$RPC":
-                    return (byte)Reg.Pc;
-                default:
-                    throw new Exception($"Invalid special register `{str}`");
-            }
+                "$RBP" => (byte)Reg.Sb,
+                "$RSP" => (byte)Reg.Sp,
+                "$RPC" => (byte)Reg.Pc,
+                _ => throw new Exception($"Invalid special register `{str}`"),
+            };
         }
 
         public static ushort ImmediateToUShort(string str) => Convert.ToUInt16(str, 16);
-        public static ushort MemoryAddressToUShort(string str) => Convert.ToUInt16(str.Substring(1), 16);
+        public static ushort MemoryAddressToUShort(string str) => Convert.ToUInt16(str[1..], 16);
         public static bool IsImmediate(string str) => Regex.IsMatch(str, @"^0X[0-9A-F]{1,4}$");
         public static bool IsSpecialRegister(string str) => str == "$RSP" || str == $"RBP" || str == "$RPC";
         public static bool IsRegister(string str) => IsSpecialRegister(str) || Regex.IsMatch(str, @"^\$REG\d$");

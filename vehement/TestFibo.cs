@@ -1,18 +1,17 @@
-﻿#define VERBOSE
+﻿//#define VERBOSE
 
-using Vehement;
-using Vehement.Assembler;
-using Vehement.Common;
-using Vehement.Debug;
+//using Vehement;
+//using Vehement.Common;
+//using Vehement.Debug;
 
-List<byte> program = new();
+//List<byte> program = new();
 
 //program.AddRange(new byte[]
 //{
 //    (byte)Op.MOV_REG_IMM, 0x06, 0x01, 0x00,     // value to increment i with
 //    (byte)Op.MOV_REG_IMM, 0x07, 0x04, 0x00,     // value to sub from Sp after popping two
 //    (byte)Op.MOV_REG_IMM, 0x00, 0x00, 0x00,     // i
-//    (byte)Op.MOV_REG_IMM, 0x01,  20,  0x00,    // while i < 20
+//    (byte)Op.MOV_REG_IMM, 0x01,  35,  0x00,    // while i < 25
 //    (byte)Op.PUSH_IMM, 0x00, 0x00,
 //    (byte)Op.PUSH_IMM, 0x01, 0x00,
 //    (byte)Op.PUSH_IMM, 0x01, 0x00,
@@ -38,24 +37,10 @@ List<byte> program = new();
 //    (byte)Op.HALT
 //});
 
-var ass = Assembler.FromFile(@"C:\Users\Shawn\source\repos\vehement\vehement\test.vasm");
-var program2 = ass.EmitCompiledProgram();
-VM vm = new(program2.ToArray()); //new(program.ToArray());
+//VM vm = new(program.ToArray());
 
 //Debugger dbg = new(vm);
-vm.RunUntilHalt();
-
+////vm.RunUntilHalt();
+//for (int i = 0; i < 1000; i++)
+//    vm.Step();
 //Console.WriteLine(dbg.Dump());
-
-//var start = DateTime.Now;
-//int[] ii = new int[1000];
-//ii[0] = 0;
-//ii[1] = 1;
-//ii[2] = 1;
-//for(int i = 3; i < 23; i++)
-//{
-//    ii[i] = ii[i - 2] + ii[i - 1];
-//}
-//var end = DateTime.Now;
-
-//Console.WriteLine($"C#: {(end - start).TotalMilliseconds}ms");

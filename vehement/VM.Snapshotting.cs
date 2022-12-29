@@ -64,7 +64,7 @@ namespace Vehement
             HeapOffsetBytes = snapshot.HeapOffsetBytes;
             HeapSizeBytes = snapshot.HeapSizeBytes;
             ProgramSegmentReadonly = snapshot.ProgramSegmentReadonly;
-            DisallowExecutingOutsideProgramSegment = snapshot.DisallowExecutingOutsideProgramSegment;
+            //DisallowExecutingOutsideProgramSegment = snapshot.DisallowExecutingOutsideProgramSegment;
             _regs = (ushort[])(snapshot.Regs.Clone());
             _mem = (byte[])(snapshot.Mem.Clone());
         }

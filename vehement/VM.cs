@@ -1,10 +1,34 @@
-﻿#define VERBOSE
+﻿//#define VERBOSE
+using System.Runtime.CompilerServices;
 using Vehement.Common;
 
 namespace Vehement
 {
     public partial class VM
     {
+        public class ProfilingData
+        {
+            public int OperationsExecuted = 0;
+            public DateTime ExecutionStart = DateTime.MinValue;
+            public DateTime ExecutionEnd = DateTime.MinValue;
+
+            public void MarkExecutionStart()
+            {
+                ExecutionStart = DateTime.Now;
+            }
+
+            public void MarkExecutionEnd()
+            {
+                ExecutionEnd = DateTime.Now;
+            }
+
+            public double OpsPerSecond => OperationsExecuted / (ExecutionEnd - ExecutionStart).TotalSeconds;
+            public ProfilingData() { }
+        }
+
+        private ProfilingData profilingData = new();
+        public ProfilingData Profiling => profilingData;
+
         internal const int REGISTER_RETURN_VALUE = 0;
         internal const int REGISTER_SB_BACKUP = (int)Reg.Reg6;
         internal const int REGISTER_SP_BACKUP = (int)Reg.Reg7;
@@ -37,7 +61,8 @@ namespace Vehement
         public int HeapSizeBytes { get; private set; } = DEFAULT_HEAP_SIZE;
 
         public bool ProgramSegmentReadonly { get; private set; } = true;
-        public bool DisallowExecutingOutsideProgramSegment { get; private set; } = true;
+        private const bool disallowExecuteAfterBoundaries = true;
+        public bool DisallowExecutingOutsideProgramSegment { get => disallowExecuteAfterBoundaries; }
 
         private ushort[] _regs = new ushort[TOTAL_REGISTER_COUNT];
         private byte[] _mem;
@@ -54,345 +79,255 @@ namespace Vehement
         private Action? _onBeforeStep;
         private Action? _onAfterStep;
 
-        private bool GetFlag(FlagsValue flag)
-        {
-            return Flags.HasFlag(flag);
-        }
-
-        private void SetFlag(FlagsValue flag, bool value)
-        {
-            if (value)
-            {
-                Flags |= flag;
-            }
-            else
-            {
-                Flags &= ~flag;
-            }
-        }
-
+        // Note: Do not use these internally. These exist solely to expose the memory to the outside.
         public Span<ushort> Registers => _regs;
         public Span<byte> Program => _mem.AsSpan(ProgramOffsetBytes, ProgramSizeBytes);
         public Span<byte> Heap => _mem.AsSpan(HeapOffsetBytes, HeapSizeBytes);
         public Span<byte> Stack => _mem.AsSpan(StackOffsetBytes, StackSizeBytes);
 
-        public void WriteWord(Word addr, Word value)
-        {
-            if (ProgramSegmentReadonly && addr.u16 >= ProgramOffsetBytes && addr.u16 < ProgramOffsetBytes + ProgramSizeBytes)
-            {
-                _halted = true;
-                Console.WriteLine(">> Illegal execution, halted.");
-            }
-            _mem[addr] = value.Low;
-            _mem[addr + 1] = value.High;
-        }
-
-        public void WriteWord(int addr, Word value)
-        {
-            _mem[addr] = value.Low;
-            _mem[addr + 1] = value.High;
-        }
-
-
-        public Word ReadWord(int addr)
-        {
-            return new Word(_mem[addr], _mem[addr + 1]);
-        }
-
-        public void StackWrite(ushort offset, Word value)
-        {
-            WriteWord(StackOffsetBytes + offset, value);
-        }
-
-        public Word StackRead(ushort offset)
-        {
-            return ReadWord(StackOffsetBytes + offset);
-        }
-
-        public Word ReadRegister(byte registerNumber)
-        {
-            return new Word(_regs[registerNumber]);
-        }
-
-        public void WriteRegister(byte registerNumber, Word value)
-        {
-            _regs[registerNumber] = value.u16;
-        }
-
-        public void Step()
+        // Note: This method assumes that the program ends least 3 bytes away from the end of the _mem array.
+        unsafe public void Step()
         {
             if (_halted) return;
+            int pc = Pc;
 
-            if (DisallowExecutingOutsideProgramSegment && Pc < StaticSegmentSizeBytes || Pc >= ProgramSizeBytes)
-                throw new Exception($"Pc is pointing to non-executable memory (0x{Pc:X2})");
+            if (disallowExecuteAfterBoundaries && pc < StaticSegmentSizeBytes || pc >= ProgramSizeBytes)
+                throw new Exception($"Pc is pointing to non-executable memory (0x{pc:X2})");
 
-            var instruction = (Op)Program[Pc];
+            var op = (Op)_mem[ProgramOffsetBytes + pc];
+#if VERBOSE
+            Console.WriteLine($"Before: {Pc} ({op})");
+#endif
             int comparison;
-            byte reg, reg2, reg3;
-            ushort addr, low, high;
-            Word value, value2, addrWord;
+            int pcAdjustment = OpEncodingHelpers.OpMayModifyPC(op) ? 0 : OpEncodingHelpers.GetInstructionSize(op);
 
-            Console.WriteLine($"PC {Pc} = 0x{instruction:X}");
-            switch (instruction)
+            fixed (ushort* regsPtr = &_regs[0])
+            fixed (byte* memPtr = &_mem[0])
             {
-                case Op.NOOP:
-                    Pc++;
-                    break;
-                case Op.PUSH:
-                    reg = Program[Pc + 1];
-                    value = ReadRegister(reg);
-                    StackWrite(Sp, value);
-                    Sp += 2;
-                    Pc += 2;
+                byte* programPtr = memPtr + ProgramOffsetBytes;
+                byte* stackPtr = memPtr + StackOffsetBytes;
+
+                int flags = 0;
+                Half f16_x, f16_y;
+                short i16_x, i16_y;
+                ushort* dst = null;
+                byte* memDst = null;
+                byte n1 = *(programPtr + pc + 1), n2 = *(programPtr + pc + 2), n3 = *(programPtr + pc + 3);
+                ushort src = 0, addr = (ushort)(n1 | (n2 << 8));
+
+                switch ((OpEncoding)((int)op & 0b111_00000))
+                {
+                    case OpEncoding.REG_IMM:
+                        dst = regsPtr + n1;
+                        src = (ushort)(n2 | (n3 << 8));
+                        break;
+                    case OpEncoding.REG_REG:
+                        dst = regsPtr + n1;
+                        src = *(regsPtr + n2);
+                        break;
+                    case OpEncoding.REG_MEM:
+                        dst = regsPtr + n1;
+                        src = *(programPtr + (n2 | (n3 << 8)));
+                        break;
+                    case OpEncoding.MEM_REG:
+                        memDst = memPtr + (n2 | (n3 << 8));
+                        src = *(regsPtr + n3);
+                        break;
+                    case OpEncoding.NONE:
+                    case OpEncoding.IMM:
+                    case OpEncoding.REG:
+                    default:
+                        break;
+                }
+
+                switch (op)
+                {
+                    case Op.PUSH:
+                        *(stackPtr + Sp) = (byte)(*(regsPtr + n1) & 0xFF);
+                        *(stackPtr + Sp + 1) = (byte)(*(regsPtr + n1) >> 8);
+                        Sp += 2;
 #if VERBOSE
-                    Console.WriteLine($"PUSH $reg{reg} (push value of register to stack)");
-                    //Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
+                        Console.WriteLine($"  PUSH value of reg {n1} ({*(stackPtr + Sp - 2) | (*(stackPtr + Sp - 1) << 8)}) at SP {Sp-2}");
 #endif
-                    break;
-                case Op.POP:
-                    reg = Program[Pc + 1];
-                    Sp -= 2;
-                    value = StackRead(Sp);
-                    WriteRegister(reg, value);
-                    Pc += 2;
+                        break;
+                    case Op.PUSH_IMM:
+                        *(stackPtr + Sp) = (byte)(n1 & 0xFF);
+                        *(stackPtr + Sp + 1) = (byte)(n2 >> 8);
+                        Sp += 2;
 #if VERBOSE
-                    Console.WriteLine($"POP $reg{reg} (pop value from stack into register)");
-                    //Console.WriteLine($"  Stack offset `0x{Sp - 2:X}` = `0x{value:X}`");
+                        Console.WriteLine($"  PUSH value of imm ({n1 | (n2>>8)}) at SP {Sp-2}");
 #endif
-                    break;
-                case Op.DUP:
-                    value = StackRead((ushort)(Sp - 2));
-                    StackWrite(Sp, value);
-                    Sp += 2;
-                    Pc += 1;
+                        break;
+                    case Op.POP:
+                        Sp -= 2;
+                        *(regsPtr + *(programPtr + pc + 1)) = (ushort)(*(stackPtr + Sp) | (*(stackPtr + Sp + 1) << 8));
 #if VERBOSE
-                    Console.WriteLine("DUP");
-                    //Console.WriteLine($"  Duplicated value from top of stack({value})");
+                        Console.WriteLine($"  POP value ({*(stackPtr + Sp) | (*(stackPtr + Sp + 1) << 8)}) from SP {Sp - 2} into register {*(programPtr + Pc + 1)}");
 #endif
-                    break;
-                case Op.ADD:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word((ushort)(ReadRegister(reg2).u16 + ReadRegister(reg3).u16));
-                    WriteRegister(reg, value);
-                    Pc += 4;
+                        break;
+                    case Op.DUP:
+                        *(stackPtr + Sp) = *(stackPtr + Sp - 2);
+                        *(stackPtr + Sp + 1) = *(stackPtr + Sp - 1);
+                        Sp += 2;
+                        break;
+                    case Op.ADD:
+                        *dst = (ushort)(*dst + src);
 #if VERBOSE
-                    Console.WriteLine($"ADD $reg{reg} $reg{reg2} $reg{reg3}");
+                        Console.WriteLine($"  ADD value ({src}) to value of reg {n1} ({*(regsPtr + n1)})");
 #endif
-                    break;
-                case Op.ADDF:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word(ReadRegister(reg2).f16 + ReadRegister(reg3).f16);
-                    WriteRegister(reg, value);
-                    Pc += 4;
+                        break;
+                    case Op.SUB:
+                        *dst = (ushort)(*dst - src);
+                        break;
+                    case Op.MUL:
+                        *dst = (ushort)(*dst * src);
+                        break;
+                    case Op.DIV:
+                        *dst = (ushort)(*dst / src);
+                        break;
+                    case Op.ADDF:
+                        f16_x = UnsafeCast<ushort, Half>(*dst);
+                        f16_y = UnsafeCast<ushort, Half>(src);
+                        *dst = UnsafeCast<Half, ushort>(f16_x + f16_y);
+                        break;
+                    case Op.SUBF:
+                        f16_x = UnsafeCast<ushort, Half>(*dst);
+                        f16_y = UnsafeCast<ushort, Half>(src);
+                        *dst = UnsafeCast<Half, ushort>(f16_x - f16_y);
+                        break;
+                    case Op.MULF:
+                        f16_x = UnsafeCast<ushort, Half>(*dst);
+                        f16_y = UnsafeCast<ushort, Half>(src);
+                        *dst = UnsafeCast<Half, ushort>(f16_x * f16_y);
+                        break;
+                    case Op.DIVF:
+                        f16_x = UnsafeCast<ushort, Half>(*dst);
+                        f16_y = UnsafeCast<ushort, Half>(src);
+                        *dst = UnsafeCast<Half, ushort>(f16_x / f16_y);
+                        break;
+                    case Op.ADDS:
+                        i16_x = UnsafeCast<ushort, short>(*dst);
+                        i16_y = UnsafeCast<ushort, short>(src);
+                        *dst = UnsafeCast<short, ushort>((short)(i16_x + i16_y));
+                        break;
+                    case Op.SUBS:
+                        i16_x = UnsafeCast<ushort, short>(*dst);
+                        i16_y = UnsafeCast<ushort, short>(src);
+                        *dst = UnsafeCast<short, ushort>((short)(i16_x - i16_y));
+                        break;
+                    case Op.MULS:
+                        i16_x = UnsafeCast<ushort, short>(*dst);
+                        i16_y = UnsafeCast<ushort, short>(src);
+                        *dst = UnsafeCast<short, ushort>((short)(i16_x * i16_y));
+                        break;
+                    case Op.DIVS:
+                        i16_x = UnsafeCast<ushort, short>(*dst);
+                        i16_y = UnsafeCast<ushort, short>(src);
+                        *dst = UnsafeCast<short, ushort>((short)(i16_x / i16_y));
+                        break;
+                    case Op.MOV_MEM_REG:
+                        *memDst = (byte)(src & 0xFF);
+                        *(memDst + 1) = (byte)(src >> 8);
+                        break;
+                    case Op.MOV_REG_IMM:
+                    case Op.MOV_REG_MEM:
+                    case Op.MOV_REG_REG:
+                        *dst = src;
+                        break;
+                    case Op.CMP_MEM_REG:
+                        comparison = (ushort)(*memDst | (*(memDst + 1) << 8)).CompareTo(src);
+                        if (comparison == 0) flags |= (byte)FlagsValue.CmpEqual;
+                        if (comparison > 0) flags |= (byte)FlagsValue.CmpGreaterThan;
+                        if (comparison < 0) flags |= (byte)FlagsValue.CmpLessThan;
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) & 0b11111_000);
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) | flags);
+                        break;
+                    case Op.CMP_REG_REG:
+                    case Op.CMP_REG_MEM:
+                        comparison = (*dst).CompareTo(src);
+                        if (comparison == 0) flags |= (byte)FlagsValue.CmpEqual;
+                        if (comparison > 0) flags |= (byte)FlagsValue.CmpGreaterThan;
+                        if (comparison < 0) flags |= (byte)FlagsValue.CmpLessThan;
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) & 0b11111_000);
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) | flags);
 #if VERBOSE
-                    Console.WriteLine($"ADDF $reg{reg} $reg{reg2} $reg{reg3}");
+                        Console.WriteLine($"  CMP_REG_(REG|MEM) {*dst} <=> {src} --> {comparison}");
+                        Console.WriteLine($"  FLAGS: {Flags}");
 #endif
-                    break;
-                case Op.SUB:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word((ushort)(ReadRegister(reg2).u16 - ReadRegister(reg3).u16));
-                    WriteRegister(reg, value);
-                    Pc += 4;
+                        break;
+                    case Op.CMP:
+                        comparison = (ushort)(_mem[Sp - 4] | (_mem[Sp - 3] << 8)).CompareTo((ushort)(_mem[Sp - 2] | (_mem[Sp - 1] << 8)));
+                        if (comparison == 0) flags |= (byte)FlagsValue.CmpEqual;
+                        if (comparison > 0) flags |= (byte)FlagsValue.CmpGreaterThan;
+                        if (comparison < 0) flags |= (byte)FlagsValue.CmpLessThan;
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) & 0b11111_000);
+                        *(regsPtr + 11) = (ushort)(*(regsPtr + 11) | flags);
+                        break;
+                    case Op.JUMP:
+                        *(regsPtr + 8) = addr;
+                        break;
+                    case Op.JUMP_EQ:
+                        *(regsPtr + 8) = (ushort)(Flags.HasFlag(FlagsValue.CmpEqual) ? addr : pc + 3);
+                        break;
+                    case Op.JUMP_NEQ:
+                        *(regsPtr + 8) = (ushort)(!Flags.HasFlag(FlagsValue.CmpEqual) ? addr : pc + 3);
+                        break;
+                    case Op.JUMP_GT:
+                        *(regsPtr + 8) = (ushort)(Flags.HasFlag(FlagsValue.CmpGreaterThan) ? addr : pc + 3);
+                        break;
+                    case Op.JUMP_LT:
+                        *(regsPtr + 8) = (ushort)(Flags.HasFlag(FlagsValue.CmpLessThan) ? addr : pc + 3);
+                        break;
+                    case Op.JUMP_LEQ:
+                        *(regsPtr + 8) = (ushort)(!Flags.HasFlag(FlagsValue.CmpGreaterThan) ? addr : pc + 3);
+                        break;
+                    case Op.JUMP_GEQ:
+                        *(regsPtr + 8) = (ushort)(!Flags.HasFlag(FlagsValue.CmpLessThan) ? addr : pc + 3);
 #if VERBOSE
-                    Console.WriteLine($"SUB $reg{reg} $reg{reg2} $reg{reg3}");
+                        Console.WriteLine($"  JUMP_GEQ to {addr} ? {(!Flags.HasFlag(FlagsValue.CmpLessThan) ? "Yes" : "No")}");
 #endif
-                    break;
-                case Op.SUBF:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word(ReadRegister(reg2).f16 - ReadRegister(reg3).f16);
-                    WriteRegister(reg, value);
-                    Pc += 4;
+                        break;
+                    case Op.CALL:
+                        Registers[REGISTER_SB_BACKUP] = Sb;
+                        Registers[REGISTER_SP_BACKUP] = Sp;
+                        Registers[REGISTER_RETURN_ADDRESS] = (ushort)(pc + 3);
+                        Sb = Sp;
+                        *(regsPtr + 8) = addr;
+                        break;
+                    case Op.RET:
+                        Sb = Registers[REGISTER_SB_BACKUP];
+                        Sp = Registers[REGISTER_SP_BACKUP];
+                        *(regsPtr + 8) = Registers[REGISTER_RETURN_ADDRESS];
+                        break;
+                    case Op.HALT:
+                        _halted = true;
+                        break;
+                    case Op.NOOP:
+                        break;
+                    default:
+                        throw new Exception($"Unrecognized instruction: `0x{(int)op:X2}` at PC={pc}");
+                }
+
+                profilingData.OperationsExecuted++;
+                *(regsPtr + 8) += (ushort)pcAdjustment;
 #if VERBOSE
-                    Console.WriteLine($"SUBF $reg{reg} $reg{reg2} $reg{reg3}");
+                Console.WriteLine($"After: {Pc}\n");
 #endif
-                    break;
-                case Op.MUL:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word((ushort)(ReadRegister(reg2).u16 * ReadRegister(reg3).u16));
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"MUL $reg{reg} $reg{reg2} $reg{reg3}");
-#endif
-                    break;
-                case Op.MULF:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word(ReadRegister(reg2).f16 * ReadRegister(reg3).f16);
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"MULF $reg{reg} $reg{reg2} $reg{reg3}");
-#endif
-                    break;
-                case Op.DIV:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word((ushort)(ReadRegister(reg2).u16 / ReadRegister(reg3).u16));
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"DIV $reg{reg} $reg{reg2} $reg{reg3}");
-#endif
-                    break;
-                case Op.DIVF:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    reg3 = Program[Pc + 3];
-                    value = new Word(ReadRegister(reg2).f16 / ReadRegister(reg3).f16);
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"DIVF $reg{reg} $reg{reg2} $reg{reg3}");
-#endif
-                    break;
-                case Op.CMP_MEM_REG:
-                case Op.CMP_REG_MEM:
-                case Op.CMP_REG_REG:
-                case Op.CMP:
-                    var props = GetComparisonProperties(instruction);
-                    value = props.X;
-                    value2 = props.Y;
-                    comparison = value.u16.CompareTo(value2.u16);
-                    SetFlag(FlagsValue.CmpEqual, comparison == 0);
-                    SetFlag(FlagsValue.CmpGreaterThan, comparison > 0);
-                    SetFlag(FlagsValue.CmpLessThan, comparison < 0);
-                    Pc += (ushort)(1 + props.Offset);
-#if VERBOSE
-                    Console.WriteLine($"Comparison result: {comparison}");
-                    //Console.WriteLine($"EQUALITY FLAG: {value} == {value2}? {Flags.HasFlag(FlagsValue.CmpEqual)}");
-                    //Console.WriteLine($"GT FLAG: {value} > {value2}? {Flags.HasFlag(FlagsValue.CmpGreaterThan)}");
-                    //Console.WriteLine($"LT FLAG: {value} < {value2}? {Flags.HasFlag(FlagsValue.CmpLessThan)}");
-#endif
-                    break;
-                case Op.MOV_REG_REG:
-                    reg = Program[Pc + 1];
-                    reg2 = Program[Pc + 2];
-                    WriteRegister(reg, ReadRegister(reg2));
-                    Pc += 3;
-#if VERBOSE
-                    Console.WriteLine($"MOV $reg{reg} $reg{reg2}");
-                    Console.WriteLine($"  reg{reg} = `0x{ReadRegister(reg2).u16:X}`");
-#endif
-                    break;
-                case Op.MOV_REG_MEM:
-                    reg = Program[Pc + 1];
-                    low = Program[Pc + 2];
-                    high = Program[Pc + 3];
-                    addrWord = new(Program[Pc + 2], Program[Pc + 3]);
-                    value = ReadWord(addrWord);
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    //Console.WriteLine($"MOV $reg{reg} $0x{addr}");
-                    //Console.WriteLine($"  Write value `0x{value:X}` to register $r{reg}");
-#endif
-                    break;
-                case Op.MOV_MEM_REG:
-                    addrWord = new Word(Program[Pc + 1], Program[Pc + 2]);
-                    reg = Program[Pc + 3];
-                    value = ReadRegister(reg);
-                    WriteWord(addrWord, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"MOV $0x{addrWord} $reg{reg}");
-                    Console.WriteLine($"  Write value `0x{value:X}` to memory at address `0x{addrWord:X}`");
-#endif
-                    break;
-                case Op.MOV_REG_IMM:
-                    reg = Program[Pc + 1];
-                    value = new Word(Program[Pc + 2], Program[Pc + 3]);
-                    WriteRegister(reg, value);
-                    Pc += 4;
-#if VERBOSE
-                    Console.WriteLine($"MOV $reg{reg} `{value}`");
-#endif
-                    break;
-                case Op.JUMP:
-                case Op.JUMP_EQ:
-                case Op.JUMP_NEQ:
-                case Op.JUMP_GT:
-                case Op.JUMP_LT:
-                case Op.JUMP_LEQ:
-                case Op.JUMP_GEQ:
-                    if (ShouldJump(instruction))
-                    {
-                        low = Program[Pc + 1];
-                        high = Program[Pc + 2];
-                        addr = (ushort)(high << 8 | low);
-                        Pc = addr;
-#if VERBOSE
-                        Console.WriteLine($"JUMP (of type {instruction}) to `0x{addr:X}`");
-#endif
-                    }
-                    else
-                    {
-                        Pc += 3;
-#if VERBOSE
-                        Console.WriteLine($"Conditional JUMP (of type {instruction}) skipped.");
-#endif
-                    }
-                    break;
-                case Op.CALL:
-                    low = Program[Pc + 1];
-                    high = Program[Pc + 2];
-                    addr = (ushort)(high << 8 | low);
-                    Registers[REGISTER_SB_BACKUP] = Sb;
-                    Registers[REGISTER_SP_BACKUP] = Sp;
-                    Registers[REGISTER_RETURN_ADDRESS] = (ushort)(Pc + 3); // this inst + size of addr + 1
-                    Sb = Sp;
-                    Pc = addr;
-#if VERBOSE
-                    Console.WriteLine($"CALL `0x{addr:X}`");
-                    Console.WriteLine($"  Stored Sb(0x{Sb:X}), Sp(0x{Sp:X}), Return address({Pc + 1:X}) into registers 6, 7, 8");
-#endif
-                    break;
-                case Op.RET:
-                    Sb = Registers[REGISTER_SB_BACKUP];
-                    Sp = Registers[REGISTER_SP_BACKUP];
-                    Pc = Registers[REGISTER_RETURN_ADDRESS];
-#if VERBOSE
-                    Console.WriteLine($"RET");
-                    Console.WriteLine($"  Restored Sb(0x{Sb:X}), Sp(0x{Sp:X}), Return address(0x{Pc + 1:X}) from registers 6, 7, 8");
-#endif
-                    break;
-                case Op.HALT:
-                    _halted = true;
-                    break;
-                default:
-                    throw new Exception($"Unrecognized or unimplemented instruction: 0x{instruction:x}");
             }
-
-#if VERBOSE
-            Console.WriteLine();
-#endif
-
         }
 
         private bool ShouldJump(Op instruction)
         {
             if (instruction == Op.JUMP) return true;
 
-            if (instruction == Op.JUMP_EQ && GetFlag(FlagsValue.CmpEqual)) return true;
-            if (instruction == Op.JUMP_NEQ && !GetFlag(FlagsValue.CmpEqual)) return true;
+            if (instruction == Op.JUMP_EQ && Flags.HasFlag(FlagsValue.CmpEqual)) return true;
+            if (instruction == Op.JUMP_NEQ && Flags.HasFlag(FlagsValue.CmpEqual)) return true;
 
-            if (instruction == Op.JUMP_GT && GetFlag(FlagsValue.CmpGreaterThan)) return true;
-            if (instruction == Op.JUMP_LT && GetFlag(FlagsValue.CmpLessThan)) return true;
+            if (instruction == Op.JUMP_GT && Flags.HasFlag(FlagsValue.CmpGreaterThan)) return true;
+            if (instruction == Op.JUMP_LT && Flags.HasFlag(FlagsValue.CmpLessThan)) return true;
 
-            if (instruction == Op.JUMP_GEQ && !GetFlag(FlagsValue.CmpLessThan)) return true;
-            if (instruction == Op.JUMP_LEQ && !GetFlag(FlagsValue.CmpGreaterThan)) return true;
+            if (instruction == Op.JUMP_GEQ && !Flags.HasFlag(FlagsValue.CmpLessThan)) return true;
+            if (instruction == Op.JUMP_LEQ && !Flags.HasFlag(FlagsValue.CmpGreaterThan)) return true;
 
             return false;
         }
@@ -408,10 +343,13 @@ namespace Vehement
 
         public void RunUntilHalt()
         {
-            while (!Halted)
+            profilingData.MarkExecutionStart();
+            while (!_halted)
             {
                 Step();
             }
+            profilingData.MarkExecutionEnd();
+            Console.WriteLine($"Total Ops: {profilingData.OperationsExecuted} | Total time: {(profilingData.ExecutionEnd - profilingData.ExecutionStart).TotalMilliseconds}ms |Ops per second: {profilingData.OpsPerSecond:0}");
         }
 
         private void InitializeMemoryLayout(byte[] program)
@@ -461,54 +399,9 @@ namespace Vehement
             Array.Copy(program, 0 + _programHeader.SizeBytes, _mem, 0, ProgramSizeBytes - _programHeader.SizeBytes);
         }
 
-        private ComparisonProperties GetComparisonProperties(Op operation)
-        {
-            ComparisonProperties props = new();
-
-            if (operation == Op.CMP)
-            {
-                props.X = StackRead((ushort)(Sp - 4));
-                props.Y = StackRead((ushort)(Sp - 2));
-            }
-            else if (operation == Op.CMP_MEM_REG)
-            {
-                props.X = ReadWord(Program[Pc + 1] + (Program[Pc + 2] << 8));
-                props.Y = ReadRegister(Program[Pc + 3]);
-                props.Offset = 3;
-            }
-            else if (operation == Op.CMP_REG_MEM)
-            {
-                props.X = ReadRegister(Program[Pc + 1]);
-                props.Y = ReadWord(Program[Pc + 2] + (Program[Pc + 3] << 8));
-                props.Offset = 3;
-            }
-            else if (operation == Op.CMP_REG_REG)
-            {
-                props.X = ReadRegister(Program[Pc + 1]);
-                props.Y = ReadRegister(Program[Pc + 2]);
-                props.Offset = 2;
-            }
-
-            return props;
-        }
-
-        private static Half ToHalf(ushort value) => ReinterpretCast<ushort, Half>(value);
-        private static ushort ToUshort(Half value) => ReinterpretCast<Half, ushort>(value);
-
-        private static unsafe TDest ReinterpretCast<TSource, TDest>(TSource source)
-        {
-            var tr = __makeref(source);
-            TDest w = default!;
-            var trw = __makeref(w);
-            *((IntPtr*)&trw) = *((IntPtr*)&tr);
-            return __refvalue(trw, TDest);
-        }
-
-        private class ComparisonProperties
-        {
-            public Word X;
-            public Word Y;
-            public int Offset;
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#pragma warning disable CS8500 // This takes the address of, gets the size of, or declares a pointer to a managed type
+        private static unsafe TTo UnsafeCast<TFrom, TTo>(TFrom value) where TFrom : struct where TTo : struct => *(TTo*)(void*)&value;
+#pragma warning restore CS8500 // This takes the address of, gets the size of, or declares a pointer to a managed type
     }
 }
